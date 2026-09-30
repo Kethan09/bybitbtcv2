@@ -1,0 +1,47 @@
+symbol: BTCUSDT
+category: linear
+history_days: 90
+interval: 1m
+min_confidence: 0.85
+min_edge_over_50: 0.10
+max_signal_age_seconds: 75
+cooldown_minutes: 1
+webhook_url: ""
+
+# Telegram alerts. Never commit a real bot token to a public repository.
+
+telegram:
+  enabled: true
+  bot_token: "8847937536:AAHA4xlbf9yzBw5XDH1HDsHgxvLhMpcIhd0"
+  chat_id: "8977957511"
+  send_no_trade: false
+timezone: Asia/Kolkata
+model_dir: models
+data_dir: data
+paper_log: data/paper_signals.csv
+
+# Train on the Bybit INDEX price because Bybit Odds Up/Down settles against
+# the index price at the exact expiry moment.
+use_index_price: true
+
+xgb:
+  n_estimators: 700
+  max_depth: 5
+  learning_rate: 0.03
+  subsample: 0.85
+  colsample_bytree: 0.85
+  min_child_weight: 8
+  reg_alpha: 0.20
+  reg_lambda: 2.0
+  random_state: 42
+  n_jobs: -1
+
+signal:
+  require_model_agreement: true
+  require_trend_filter: true
+  min_adx: 16
+  max_atr_pct: 0.0045
+  min_atr_pct: 0.00015
+  max_spread_bps: 8
+  use_manual_payout_filter: true
+  default_payout_multiplier: 1.80

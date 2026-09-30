@@ -1,0 +1,8 @@
+pandas>=2.2
+numpy>=1.26
+requests>=2.32
+websocket-client>=1.8
+scikit-learn>=1.5
+xgboost>=3.0
+joblib>=1.4
+PyYAML>=6.0
