@@ -26,6 +26,8 @@ class BybitBTCProbabilityBot:
         self.telegram_bot_token = str(tg.get("bot_token", "")).strip()
         self.telegram_chat_id = str(tg.get("chat_id", "")).strip()
         self.telegram_send_no_trade = bool(tg.get("send_no_trade", False))
+        self.telegram_send_every_5m = bool(tg.get("send_every_5m", True))
+        self.last_telegram_5m = None
         self.models = {
             5: joblib.load(Path(cfg["model_dir"]) / "model_5m.joblib"),
             15: joblib.load(Path(cfg["model_dir"]) / "model_15m.joblib"),
@@ -53,9 +55,14 @@ class BybitBTCProbabilityBot:
         }], index=[start])
         self.buffer = pd.concat([self.buffer.drop(index=start, errors="ignore"), row]).sort_index().tail(3000)
 
-        # Every closed minute is a potential Odds entry point. The 5m/15m horizon starts NOW.
-        self.emit_prediction(5)
-        self.emit_prediction(15)
+        # Every closed minute is a prediction point. For Telegram, send one combined update
+        # every 5 minutes so the user gets the latest price + both horizon predictions.
+        p5 = self.emit_prediction(5, return_payload=True)
+        p15 = self.emit_prediction(15, return_payload=True)
+        minute_key = start.floor("5min")
+        if self.last_telegram_5m != minute_key and p5 is not None and p15 is not None:
+            self.last_telegram_5m = minute_key
+            self._send_telegram_5m(p5, p15)
 
     def _predict(self, horizon: int):
         frame = make_features(self.buffer)
@@ -86,6 +93,44 @@ class BybitBTCProbabilityBot:
         if not (float(s.get("min_atr_pct", 0.00015)) <= atr <= float(s.get("max_atr_pct", 0.0045))):
             reasons.append(f"ATR regime filtered ({atr:.5f})")
         return len(reasons) == 0, reasons
+
+    def _telegram_5m_message(self, p5: dict, p15: dict) -> str:
+        def line(p: dict, label: str) -> str:
+            return (
+                f"<b>{label}:</b> {p['direction']}\n"
+                f"UP {p['probability_up_pct']:.2f}% | DOWN {p['probability_down_pct']:.2f}%\n"
+                f"Confidence: {p['confidence_pct']:.2f}% | Decision: {p['action']}"
+            )
+        agreement = "YES" if p5['direction'] == p15['direction'] else "NO"
+        return (
+            f"📊 <b>BTCUSDT 5-MIN UPDATE</b>\n\n"
+            f"<b>Time:</b> {p5['signal_time_local']}\n"
+            f"<b>Index price:</b> ${p5['index_price']:,.2f}\n\n"
+            + line(p5, "5M prediction") + "\n\n"
+            + line(p15, "15M prediction") + "\n\n"
+            f"<b>Model agreement:</b> {agreement}\n"
+            f"<i>Prediction only — no Bybit Odds order submitted.</i>"
+        )
+
+    def _send_telegram_5m(self, p5: dict, p15: dict):
+        if not self.telegram_enabled or not self.telegram_send_every_5m:
+            return
+        if not self.telegram_bot_token or not self.telegram_chat_id:
+            print("Telegram 5m updates enabled but bot token/chat id is missing.")
+            return
+        url = f"https://api.telegram.org/bot{self.telegram_bot_token}/sendMessage"
+        body = {
+            "chat_id": self.telegram_chat_id,
+            "text": self._telegram_5m_message(p5, p15),
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        }
+        try:
+            r = requests.post(url, json=body, timeout=10)
+            r.raise_for_status()
+            print("Telegram 5m update sent.")
+        except requests.RequestException as exc:
+            print(f"Telegram error: {exc}")
 
     def _telegram_message(self, payload: dict) -> str:
         action = payload["action"]
@@ -146,11 +191,11 @@ class BybitBTCProbabilityBot:
                 print(f"Webhook error: {exc}")
         self._send_telegram(payload)
 
-    def emit_prediction(self, horizon: int):
+    def emit_prediction(self, horizon: int, return_payload: bool = False):
         frame = make_features(self.buffer)
         p = self._predict(horizon)
         if p is None:
-            return
+            return None
         direction = "UP" if p >= 0.5 else "DOWN"
         confidence = max(p, 1 - p)
         ok_filter, reasons = self._filters(frame, direction)
@@ -174,7 +219,7 @@ class BybitBTCProbabilityBot:
 
         ts = frame.index[-1]
         if self.last_emitted[horizon] == ts:
-            return
+            return None
         self.last_emitted[horizon] = ts
 
         local = ts.tz_convert(self.cfg.get("timezone", "Asia/Kolkata"))
@@ -194,7 +239,9 @@ class BybitBTCProbabilityBot:
             "reason": "; ".join(reasons),
             "paper_mode": True,
         }
-        self._emit(payload)
+        if not return_payload:
+            self._emit(payload)
+        return payload
 
 
 def run():
